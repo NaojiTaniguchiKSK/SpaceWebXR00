@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebXR Space Flight with Three.js</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+    </style>
+    <!-- Import maps polyfill -->
+    <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+
+    <!-- Three.js のインポート設定 -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+</head>
+<body>
+    <script type="module">
+        import * as THREE from 'three';
+        import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+        // --------------------------------------------------
+        // 1. シーン・カメラ・レンダラーの初期化
+        // --------------------------------------------------
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000005, 0.0015); // 遠くの天体を自然に沈ませるフォグ
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+        // ★ WebXRの重要テクニック:
+        // VR内では頭の動きでカメラの位置・回転が直に固定されるため、
+        // プレイヤー全体の移動（飛行）には親オブジェクト（dolly）を作成してそれを動かします。
+        const dolly = new THREE.Group();
+        dolly.add(camera);
+        scene.add(dolly);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.xr.enabled = true; // WebXR機能の有効化
+        document.body.appendChild(renderer.domElement);
+
+        // VRモード開始用の「ENTER VR」ボタンを画面に追加
+        document.body.appendChild(VRButton.createButton(renderer));
+
+        // --------------------------------------------------
+        // 2. ライティングの設定
+        // --------------------------------------------------
+        const ambientLight = new THREE.AmbientLight(0x333344); // 宇宙全体のうっすらとした環境光
+        scene.add(ambientLight);
+
+        // 恒星（太陽）からの強力な平行光源
+        const sunLight = new THREE.DirectionalLight(0xffffff, 2.5);
+        sunLight.position.set(100, 30, -50);
+        scene.add(sunLight);
+
+        // --------------------------------------------------
+        // 3. 宇宙空間（星々・パーティクル）の生成
+        // --------------------------------------------------
+        const starsCount = 6000;
+        const starGeometry = new THREE.BufferGeometry();
+        const starPositions = new Float32Array(starsCount * 3);
+
+        for (let i = 0; i < starsCount * 3; i += 3) {
+            starPositions[i]     = (Math.random() - 0.5) * 400; // X
+            starPositions[i + 1] = (Math.random() - 0.5) * 400; // Y
+            starPositions[i + 2] = (Math.random() - 0.5) * 1000; // Z
+        }
+
+        starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starMaterial = new THREE.PointsMaterial({
+            color: 0xffffff,
+            size: 0.7,
+            transparent: true,
+            opacity: 0.9
+        });
+        const starField = new THREE.Points(starGeometry, starMaterial);
+        scene.add(starField);
+
+        // --------------------------------------------------
+        // 4. 惑星オブジェクトの生成
+        // --------------------------------------------------
+        const planets = [];
+
+        function createPlanet(color, radius, x, y, z) {
+            const geo = new THREE.SphereGeometry(radius, 32, 32);
+            const mat = new THREE.MeshStandardMaterial({
+                color: color,
+                roughness: 0.7,
+                metalness: 0.1
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, y, z);
+            scene.add(mesh);
+            planets.push(mesh);
+            return mesh;
+        }
+
+        // コース沿いに配置する惑星群
+        createPlanet(0x2266ff, 12, -35, 10, -150);  // 青い地球風惑星
+        createPlanet(0xff5533, 8,   25, -5, -300);   // 赤い火星風惑星
+        
+        // 環のある惑星（土星風）
+        const saturn = createPlanet(0xddbb77, 16, -10, 15, -500);
+        const ringGeo = new THREE.RingGeometry(20, 32, 32);
+        const ringMat = new THREE.MeshStandardMaterial({ 
+            color: 0xc2a050, 
+            side: THREE.DoubleSide, 
+            transparent: true, 
+            opacity: 0.8 
+        });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.rotation.x = Math.PI / 2.2;
+        saturn.add(ring);
+
+        // 巨大なガス惑星（遠景）
+        createPlanet(0xaa44cc, 40, 100, 20, -800);
+
+        // --------------------------------------------------
+        // 5. アニメーション＆WebXRレンダリングループ
+        // --------------------------------------------------
+        const flightSpeed = 0.6; // 飛行速度
+
+        // ★ WebXRでは requestAnimationFrame ではなく
+        //    renderer.setAnimationLoop を使う必要があります
+        renderer.setAnimationLoop(() => {
+            // プレイヤー（dolly）をZ軸マイナス方向（前方）に移動
+            dolly.position.z -= flightSpeed;
+
+            // --- 無限飛行の演出 ---
+            // カメラが遠くに進むにつれ、通り過ぎた星を前方（進行方向）に再配置する
+            const positions = starField.geometry.attributes.position.array;
+            for (let i = 2; i < starsCount * 3; i += 3) {
+                // カメラの後ろに約50単位以上通り過ぎた星を前方に移動
+                if (positions[i] > dolly.position.z + 50) {
+                    positions[i] = dolly.position.z - 800;
+                }
+            }
+            starField.geometry.attributes.position.needsUpdate = true;
+
+            // 惑星を自転させる
+            planets.forEach(planet => {
+                planet.rotation.y += 0.003;
+            });
+
+            // 描画
+            renderer.render(scene, camera);
+        });
+
+        // --------------------------------------------------
+        // 6. ウィンドウサイズ変更対応
+        // --------------------------------------------------
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
